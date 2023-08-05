@@ -4,7 +4,7 @@ This is a custom packet sniffer(inspects all the communication between the serve
 # Dependencies
 [SharpCap](https://github.com/dotpcap/sharppcap)
 
-# How to use?
+# How to setup?
 Follow [SharpCap's](https://github.com/dotpcap/sharppcap) read me. <br>
 Easy setup: 
 * Windows: Install [NpCap's](https://npcap.com/#download) dependencies.
