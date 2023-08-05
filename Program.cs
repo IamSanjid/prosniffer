@@ -1,4 +1,5 @@
-﻿using System;
+﻿using SharpPcap;
+using System;
 using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
@@ -12,6 +13,10 @@ namespace PROSniffer
         private static Main? _main;
         static void Main(string[] args)
         {
+#if !DEBUG
+            AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
+            TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
+#endif
             Thread.CurrentThread.Name = "Main Thread";
             Console.CancelKeyPress += Console_CancelKeyPress;
             _main = new Main();
@@ -32,6 +37,34 @@ namespace PROSniffer
         {
             _main?.Quit();
         }
+
+        private static void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
+        {
+            HandleUnhandledException(e.ExceptionObject as Exception);
+        }
+
+        private static void TaskScheduler_UnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+        {
+            HandleUnhandledException(e.Exception.InnerException);
+        }
+
+        private static void HandleUnhandledException(Exception? ex)
+        {
+            try
+            {
+                if (ex != null)
+                {
+                    File.WriteAllText("crash_" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss") + ".txt",
+                        "PROSniffer crash report: " + Environment.NewLine + ex);
+                }
+                Console.WriteLine("PROSniffer encountered a fatal error. The application will now terminate.");
+                Console.WriteLine("An error file has been created next to the application.");
+                Environment.Exit(0);
+            }
+            catch
+            {
+            }
+        }
     }
 
     public class Main
@@ -50,7 +83,7 @@ namespace PROSniffer
                   If you want to provide a custom filter like wireshark advance filters to detect PRO communication you can do that.
                   Just provide it this way: sniff i=[index] cf="your filter".
          filter|f
-            Desc: You can provide custom Regex pattern to filter out packets.
+            Desc: You can provide custom Regex pattern to filter out received packets.
          pause|p|resume|r
             Desc: Pauses/Resumes from printing/logging packets.
          clear|cls
@@ -146,7 +179,7 @@ namespace PROSniffer
             Task.Delay(1).ContinueWith((previous) => Update());
         }
 
-        private void StartNewSniffer(int interfaceIdx, ushort port, string customFilter)
+        private void StartNewSniffer(int interfaceIdx, ushort port, string? customFilter)
         {
             lock (_packetLogs)
             {
@@ -218,7 +251,7 @@ namespace PROSniffer
 #if !GOLDTEST
                     var port = Default.GAME_PORT;
                     int interfaceIdx = -1;
-                    string customFilter = "";
+                    string? customFilter = null;
 
                     if (cmdArgs.Length > 1)
                     {

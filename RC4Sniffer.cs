@@ -68,7 +68,7 @@ namespace PROSniffer
             return recvState.Crypt(input, len > 0 ? len : input.Length);
         }
 
-        public RC4Sniffer(int deviceIdx, ushort port, string customFilter = "") : base(deviceIdx, port, customFilter)
+        public RC4Sniffer(int deviceIdx, ushort port, string? customFilter = null) : base(deviceIdx, port, customFilter)
         {
             PacketDelimiter = "|.\\\r\n";
             TextEncoding = Encoding.GetEncoding("ISO-8859-1");

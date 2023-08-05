@@ -28,7 +28,7 @@ namespace PROSniffer
 
         public ushort RemotePort { get; }
         public int DeviceIndex { get; }
-        public string CustomFilter { get; }
+        public string? CustomFilter { get; }
         public bool HasStarted => _selectedDevice != null && _selectedDevice.Started;
 
         protected string PacketDelimiter = "\n";
@@ -37,7 +37,7 @@ namespace PROSniffer
         public event Action<string>? PacketReceived;
         public event Action<string>? SentPacket;
 
-        public PortSniffer(int deviceIndex, ushort remotePort = 0, string customFilter = "")
+        public PortSniffer(int deviceIndex, ushort remotePort = 0, string? customFilter = null)
         {
             _selectedDevice = CaptureDeviceList.Instance[deviceIndex];
             DeviceIndex = deviceIndex;
@@ -211,8 +211,8 @@ namespace PROSniffer
             int pos = _receiveBuffer.IndexOf(PacketDelimiter);
             if (pos >= 0)
             {
-                string packet = _receiveBuffer.Substring(0, pos);
-                _receiveBuffer = _receiveBuffer.Substring(pos + PacketDelimiter.Length);
+                string packet = _receiveBuffer[..pos];
+                _receiveBuffer = _receiveBuffer[(pos + PacketDelimiter.Length)..];
                 lock (_pendingRecvPackets)
                 {
                     _pendingRecvPackets.Enqueue(packet);
@@ -237,8 +237,8 @@ namespace PROSniffer
             int pos = _sentBuffer.IndexOf(PacketDelimiter);
             if (pos >= 0)
             {
-                string packet = _sentBuffer.Substring(0, pos);
-                _sentBuffer = _sentBuffer.Substring(pos + PacketDelimiter.Length);
+                string packet = _sentBuffer[..pos];
+                _sentBuffer = _sentBuffer[(pos + PacketDelimiter.Length)..];
                 lock (_pendingSentPackets)
                 {
                     _pendingSentPackets.Enqueue(packet);

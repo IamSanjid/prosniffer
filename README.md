@@ -24,7 +24,7 @@ sniff i=[interface index] <p|port=[ushort]; default is 800(Silver Server), provi
          If you want to provide a custom filter like wireshark advance filters to detect PRO communication you can do that.
          Just provide it this way: sniff i=[index] cf="your filter".
 filter|f
-   Desc: You can provide custom Regex pattern to filter out packets.
+   Desc: You can provide custom Regex pattern to filter out received packets.
 pause|p|resume|r
    Desc: Pauses/Resumes from printing/logging packets.
 clear|cls
@@ -35,4 +35,30 @@ exit|q
    Desc: Exits normally also dumps all the packets to a file if dump command was provided previously, check "Dumps" folder.
 h|help
    Desc: Prints out this message.
+```
+
+Example:
+```
+Interfaces:
+[0]: WAN Miniport (Network Monitor)
+[1]: WAN Miniport (IPv6)
+[2]: WAN Miniport (IP)
+[3]: VMware Virtual Ethernet Adapter for VMnet8
+[4]: VMware Virtual Ethernet Adapter for VMnet1
+[5]: Realtek Gaming 2.5GbE Family Controller
+[6]: Adapter for loopback traffic capture
+```
+
+A list like above should be printed, if it doesn't just put `i` and enter.<br>
+As you can see for the above case it's obvious that index no 5 is the proper interface to care about.<br>
+So for this specific case the user should put the follwing command if the user is going to login in to the `Gold` server.
+
+```
+sniff i=5 port=801
+```
+
+If the user is going to log in to the `Silver` server the command should be like this.
+
+```
+sniff i=5 port=800
 ```
