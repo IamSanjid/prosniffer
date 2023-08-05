@@ -37,7 +37,7 @@ h|help
    Desc: Prints out this message.
 ```
 
-Example:
+# Example
 ```
 Interfaces:
 [0]: WAN Miniport (Network Monitor)
