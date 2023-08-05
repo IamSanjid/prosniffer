@@ -30,9 +30,9 @@ pause|p|resume|r
 clear|cls
    Desc: Clears the console screen, doesn't clear the internal packet log(which is used if you want to dump packets when quiting normally).
 dump <file name> 
-   Desc: Dumps all the packets inside the "{Default.DUMP_DIRECTORY}" folder.
+   Desc: Dumps all the packets inside the "Dumps" folder.
 exit|q
-   Desc: Exits normally also dumps all the packets to a file if dump command was provided previously, check "{Default.DUMP_DIRECTORY}" folder.
+   Desc: Exits normally also dumps all the packets to a file if dump command was provided previously, check "Dumps" folder.
 h|help
    Desc: Prints out this message.
 ```
