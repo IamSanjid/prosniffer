@@ -47,8 +47,8 @@ namespace PROSniffer
             Desc: Shows all the eathernet/wireless interfaces on your machine.
          sniff i=[interface index] <p|port=[ushort]; default is 800(Silver Server), provide 801 for Gold Server> <custom filter>
             Desc: Starts sniffing, if no argument is provided uses last provided arguments. 
-            If you want to provide a custom filter like wireshark advance filters to detect PRO communication you can do that.
-            Just provide it this way: sniff i=[index] cf="your filter".
+                  If you want to provide a custom filter like wireshark advance filters to detect PRO communication you can do that.
+                  Just provide it this way: sniff i=[index] cf="your filter".
          filter|f
             Desc: You can provide custom Regex pattern to filter out packets.
          pause|p|resume|r
