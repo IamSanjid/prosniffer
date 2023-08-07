@@ -23,9 +23,6 @@ namespace PROSniffer
         private string _sentBuffer = string.Empty;
         private readonly Queue<string> _pendingSentPackets = new();
 
-        private readonly ConcurrentQueue<byte[]> _recvQueuePackets = new();
-        private readonly ConcurrentQueue<byte[]> _sendQueuePackets = new();
-
         public ushort RemotePort { get; }
         public int DeviceIndex { get; }
         public string? CustomFilter { get; }
@@ -69,12 +66,12 @@ namespace PROSniffer
                 if (srcPort == RemotePort)
                 {
                     // Receiving from server...
-                    _recvQueuePackets.Enqueue(packetsData);
+                    OnPacketReceived(packetsData);
                 }
                 else
                 {
                     // Sending to server...
-                    _sendQueuePackets.Enqueue(packetsData);
+                    OnPacketSent(packetsData);
                 }
             }
         }
@@ -108,16 +105,6 @@ namespace PROSniffer
             if (!HasStarted)
             {
                 return;
-            }
-
-            while (_recvQueuePackets.TryDequeue(out var bytes))
-            {
-                OnPacketReceived(bytes);
-            }
-
-            while (_sendQueuePackets.TryDequeue(out var bytes))
-            {
-                OnPacketSent(bytes);
             }
 
             ReceivePendingPackets();
@@ -215,7 +202,7 @@ namespace PROSniffer
                 _receiveBuffer = _receiveBuffer[(pos + PacketDelimiter.Length)..];
                 lock (_pendingRecvPackets)
                 {
-                    _pendingRecvPackets.Enqueue(packet);
+                    _pendingRecvPackets.Enqueue(ProcessPacketBeforeReceiving(packet));
                 }
                 return true;
             }
@@ -241,7 +228,7 @@ namespace PROSniffer
                 _sentBuffer = _sentBuffer[(pos + PacketDelimiter.Length)..];
                 lock (_pendingSentPackets)
                 {
-                    _pendingSentPackets.Enqueue(packet);
+                    _pendingSentPackets.Enqueue(ProcessSentPacketBeforeReceiving(packet));
                 }
                 return true;
             }

@@ -31,6 +31,7 @@ namespace PROSniffer
                 _main.ProcessCommand("i");
             }
             _main.ReadInput();
+            _main.Quit();
         }
 
         private static void Console_CancelKeyPress(object? sender, ConsoleCancelEventArgs e)
@@ -82,15 +83,16 @@ namespace PROSniffer
             Desc: Starts sniffing, if no argument is provided uses last provided arguments. 
                   If you want to provide a custom filter like wireshark advance filters to detect PRO communication you can do that.
                   Just provide it this way: sniff i=[index] cf="your filter".
-         filter|f
-            Desc: You can provide custom Regex pattern to filter out received packets.
+         filter|f <pattern>
+            Desc: You can provide custom Regex pattern to filter out received packets. No <pattern> means clear previous patterns.
+                  Btw if you don't want to print any received packets you can provide something like this `f "^(?!x)x$"`.
          pause|p|resume|r
             Desc: Pauses/Resumes from printing/logging packets.
          clear|cls
             Desc: Clears the console screen, doesn't clear the internal packet log(which is used if you want to dump packets when quiting normally).
          dump <file name> 
             Desc: Dumps all the packets inside the "{Default.DUMP_DIRECTORY}" folder.
-         exit|q
+         exit|quit|q
             Desc: Exits normally also dumps all the packets to a file if dump command was provided previously, check "{Default.DUMP_DIRECTORY}" folder.
          h|help
             Desc: Prints out this message.
@@ -115,33 +117,46 @@ namespace PROSniffer
         private bool _dumpPackets = false;
         private string _dumpFilename = "";
 
+        private bool _firstSentPacket = false;
+
         public Main()
         {
+            Task.Run(UpdateSniffer);
             Task.Run(Update);
+        }
+
+        private void UpdateSniffer()
+        {
+            if (_sniffer != null)
+            {
+                lock (_sniffer)
+                {
+                    _sniffer?.Update();
+                }
+            }
+            Task.Delay(1).ContinueWith((previous) => UpdateSniffer());
         }
 
         private void Update()
         {
-            lock (_packetLogs)
+            if (_sniffer != null && !_pausedSniffing)
             {
-                _sniffer?.Update();
-                if (_sniffer != null && !_pausedSniffing)
+                lock (_packetLogs)
                 {
                     while (_sentPacketsQueue.TryDequeue(out var packet))
                     {
-                        var textEncoding = _sniffer.GetTextEncoding();
-                        var bytes = textEncoding.GetBytes(packet);
-
-                        var first4bytes = new byte[sizeof(float)];
-                        Array.Copy(bytes, first4bytes, first4bytes.Length);
-
                         string timeStr = "";
 
-                        if (packet[0] != '+')
+                        if (!_firstSentPacket)
                         {
+                            var textEncoding = _sniffer.GetTextEncoding();
+                            var bytes = textEncoding.GetBytes(packet);
+
+                            ReadOnlySpan<byte> first4Bytes = new(bytes, 0, sizeof(float));
+
                             try
                             {
-                                var foundTime = BitConverter.ToSingle(first4bytes, 0);
+                                var foundTime = BitConverter.ToSingle(first4Bytes);
                                 if (float.IsNormal(foundTime))
                                 {
                                     timeStr = $"[{foundTime}] ";
@@ -152,30 +167,40 @@ namespace PROSniffer
                             {
                             }
                         }
+                        else
+                        {
+                            _firstSentPacket = false;
+                        }
+
                         var packetLog = $"[>] {timeStr}" + packet;
                         AddLog(packetLog);
                         _packetLogs.Add(packetLog);
+
+                        if (packet == "quit")
+                        {
+                            StartNewSniffer(_sniffer.DeviceIndex, _sniffer.RemotePort, _sniffer.CustomFilter);
+                        }
                     }
                     while (_recvPacketsQueue.TryDequeue(out var packet))
                     {
-                        bool ok = true;
                         foreach (var filter in _filterRegexes)
                         {
                             if (!Regex.IsMatch(packet, filter))
                             {
-                                ok = false;
-                                break;
+                                goto Continue;
                             }
-                        }
-                        if (!ok)
-                        {
-                            continue;
                         }
                         AddLog(packet);
                         _packetLogs.Add(packet);
+
+                        if (packet == "quit")
+                        {
+                            StartNewSniffer(_sniffer.DeviceIndex, _sniffer.RemotePort, _sniffer.CustomFilter);
+                        }
                     }
                 }
             }
+            Continue:
             Task.Delay(1).ContinueWith((previous) => Update());
         }
 
@@ -183,6 +208,7 @@ namespace PROSniffer
         {
             lock (_packetLogs)
             {
+                _firstSentPacket = true;
                 _sniffer?.StopSniffing();
 
                 _sniffer = new RC4Sniffer(interfaceIdx, port, customFilter);
@@ -222,6 +248,7 @@ namespace PROSniffer
             switch (cmdArgs[0].ToLowerInvariant())
             {
                 case "exit":
+                case "quit":
                 case "q":
                     Quit();
                     break;
@@ -301,6 +328,7 @@ namespace PROSniffer
 #else
                     ushort port = 801;
                     int interfaceIdx = 5;
+                    string? customFilter = null;
 #endif
                     if (interfaceIdx != -1)
                     {

@@ -28,11 +28,7 @@ namespace PROSniffer
                     _i = (_i + 1) % 256;
                     _j = (_j + _box[_i]) % 256;
 
-                    byte temp_i = _box[_i];
-
-                    _box[_i] = _box[_j];
-                    _box[_j] = temp_i;
-
+                    (_box[_j], _box[_i]) = (_box[_i], _box[_j]);
                     new_bytes[i] = (byte)(data[i] ^ _box[(_box[_i] + _box[_j]) % 256]);
                 }
 
