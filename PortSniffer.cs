@@ -34,7 +34,9 @@ namespace PROSniffer
         public event Action<string>? PacketReceived;
         public event Action<string>? SentPacket;
 
-        public PortSniffer(int deviceIndex, ushort remotePort = 0, string? customFilter = null)
+        // TODO: Make it independent of the remote port.
+        //       Call it something more suitable instead of "PortSniffer".
+        public PortSniffer(int deviceIndex, ushort remotePort, string? customFilter = null)
         {
             _selectedDevice = CaptureDeviceList.Instance[deviceIndex];
             DeviceIndex = deviceIndex;
@@ -76,16 +78,16 @@ namespace PROSniffer
             }
         }
 
-        public void StartSniffing(int readTimeout = 1000)
+        public void StartSniffing(int readTimeout = 5000)
         {
             if (HasStarted)
             {
                 return;
             }
-            _selectedDevice.Open(DeviceModes.Promiscuous, readTimeout);
+            _selectedDevice.Open(DeviceModes.MaxResponsiveness, readTimeout);
             if (CustomFilter != null)
             {
-                _selectedDevice.Filter = CustomFilter;
+                _selectedDevice.Filter = $"{CustomFilter} port {RemotePort}";
             }
             else
             {
