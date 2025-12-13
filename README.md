@@ -3,6 +3,7 @@ This is a custom packet sniffer(inspects all the communication between the serve
 
 # Dependencies
 [SharpCap](https://github.com/dotpcap/sharppcap)
+[Terminal.Gui v2](https://github.com/gui-cs/Terminal.Gui/tree/v2_develop)
 
 # How to setup?
 Follow [SharpCap's](https://github.com/dotpcap/sharppcap) read me. <br>
