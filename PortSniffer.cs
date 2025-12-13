@@ -1,10 +1,5 @@
 ﻿using SharpPcap;
-using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
 
 namespace PROSniffer
 {
@@ -14,14 +9,6 @@ namespace PROSniffer
         {
             return CaptureDeviceList.Instance.Select(x => x.Description);
         }
-
-        private readonly ILiveDevice _selectedDevice;
-
-        private string _receiveBuffer = string.Empty;
-        private readonly Queue<string> _pendingRecvPackets = new();
-
-        private string _sentBuffer = string.Empty;
-        private readonly Queue<string> _pendingSentPackets = new();
 
         public ushort RemotePort { get; }
         public int DeviceIndex { get; }
@@ -34,6 +21,16 @@ namespace PROSniffer
         public event Action<string>? PacketReceived;
         public event Action<string>? SentPacket;
 
+        private readonly ILiveDevice _selectedDevice;
+
+        private string _receiveBuffer = string.Empty;
+        private readonly Queue<string> _pendingRecvPackets = new();
+
+        private string _sentBuffer = string.Empty;
+        private readonly Queue<string> _pendingSentPackets = new();
+
+        private readonly TcpReassembler _reassembler;
+
         // TODO: Make it independent of the remote port.
         //       Call it something more suitable instead of "PortSniffer".
         public PortSniffer(int deviceIndex, ushort remotePort, string? customFilter = null)
@@ -44,55 +41,47 @@ namespace PROSniffer
             RemotePort = remotePort;
             CustomFilter = customFilter;
             _selectedDevice.OnPacketArrival += OnPacketArrival;
+
+            _reassembler = new TcpReassembler(remotePort);
         }
 
         private void OnPacketArrival(object sender, PacketCapture e)
         {
-            //var time = e.Header.Timeval.Date;
-            //var len = e.Data.Length;
             var rawPacket = e.GetPacket();
 
-            var packet = PacketDotNet.Packet.ParsePacket(rawPacket.LinkLayerType, rawPacket.Data);
+            var packet = PacketDotNet.Packet.ParsePacket(
+                rawPacket.LinkLayerType,
+                rawPacket.Data
+            );
 
             var tcpPacket = packet.Extract<PacketDotNet.TcpPacket>();
-            if (tcpPacket != null && tcpPacket.PayloadData != null && tcpPacket.PayloadData.Length > 0)
-            {
-                //var ipPacket = (PacketDotNet.IPPacket)tcpPacket.ParentPacket;
-                //System.Net.IPAddress srcIp = ipPacket.SourceAddress;
-                //System.Net.IPAddress dstIp = ipPacket.DestinationAddress;
-                int srcPort = tcpPacket.SourcePort;
-                //int dstPort = tcpPacket.DestinationPort;
+            if (tcpPacket == null || tcpPacket.PayloadData == null || tcpPacket.PayloadData.Length == 0)
+                return;
 
-                byte[] packetsData = new byte[tcpPacket.PayloadData.Length];
-                Array.Copy(tcpPacket.PayloadData, packetsData, tcpPacket.PayloadData.Length);
-                if (srcPort == RemotePort)
-                {
-                    // Receiving from server...
-                    OnPacketReceived(packetsData);
-                }
-                else
-                {
-                    // Sending to server...
-                    OnPacketSent(packetsData);
-                }
-            }
+            if (tcpPacket.ParentPacket is not PacketDotNet.IPPacket ipPacket)
+                return;
+
+            _reassembler.ProcessTcpPacket(
+                tcpPacket,
+                ipPacket,
+                onToServer: OnPacketSent,
+                onToClient: OnPacketReceived
+            );
         }
 
-        public void StartSniffing(int readTimeout = 5000)
+        public void StartSniffing(int readTimeout = 1000)
         {
             if (HasStarted)
             {
                 return;
             }
-            _selectedDevice.Open(DeviceModes.MaxResponsiveness, readTimeout);
-            if (CustomFilter != null)
+            _selectedDevice.Open(DeviceModes.Promiscuous | DeviceModes.MaxResponsiveness, readTimeout);
+            var filter = $"ip and tcp port {RemotePort}";
+            if (!string.IsNullOrEmpty(CustomFilter))
             {
-                _selectedDevice.Filter = $"{CustomFilter} port {RemotePort}";
+                filter += " " + CustomFilter;
             }
-            else
-            {
-                _selectedDevice.Filter = $"port {RemotePort}";
-            }
+            _selectedDevice.Filter = filter;
             _selectedDevice.StartCapture();
         }
 

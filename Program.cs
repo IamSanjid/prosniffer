@@ -1,16 +1,24 @@
-﻿using SharpPcap;
-using System;
-using System.Collections.Concurrent;
-using System.IO;
-using System.Linq;
-using System.Text;
+﻿using System.Collections.Concurrent;
+using System.CommandLine;
+using System.CommandLine.Completions;
+using System.CommandLine.Help;
+using System.Diagnostics;
 using System.Text.RegularExpressions;
+using Terminal.Gui.App;
+using Terminal.Gui.Configuration;
+using Terminal.Gui.Drawing;
+using Terminal.Gui.Input;
+using Terminal.Gui.ViewBase;
+using Terminal.Gui.Views;
 
 namespace PROSniffer
 {
     internal class Program
     {
-        private static Main? _main;
+#pragma warning disable CS8618
+        static IApplication _app;
+#pragma warning restore CS8618
+
         static void Main(string[] args)
         {
 #if !DEBUG
@@ -19,24 +27,20 @@ namespace PROSniffer
 #endif
             Thread.CurrentThread.Name = "Main Thread";
             Console.CancelKeyPress += Console_CancelKeyPress;
-            _main = new Main();
-            _main.PrintHelp();
 
-            if (args.Length > 1)
-            {
-                _main.ProcessCommand(string.Join(" ", args.Skip(1).ToArray()));
-            }
-            else
-            {
-                _main.ProcessCommand("i");
-            }
-            _main.ReadInput();
-            _main.Quit();
+            ConfigurationManager.Enable(ConfigLocations.All);
+            _app = Application.Create();
+            _app.Init();
+
+            MainWindow mainWindow = new(_app);
+            _app.Run(mainWindow);
+            mainWindow.OnQuite();
+            _app.Dispose();
         }
 
         private static void Console_CancelKeyPress(object? sender, ConsoleCancelEventArgs e)
         {
-            _main?.Quit();
+            _app.RequestStop();
         }
 
         private static void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
@@ -68,9 +72,265 @@ namespace PROSniffer
         }
     }
 
-    public class Main
+    public sealed class MainWindow : Window
     {
-        const string HELP_MSG = $"""
+        readonly TextView _packetLogView;
+        readonly TextView _logView;
+        readonly TextField _commandInputView;
+        readonly Shortcut _lastStatus;
+        PROSnifferCommand? _currentCommand;
+        int _beforeCursorPos = -1;
+
+        readonly MainWorker _mainWorker;
+
+        readonly Stack<string> _prevCommands = [];
+        readonly Stack<string> _nextCommands = [];
+
+        public MainWindow(IApplication app)
+        {
+            SetApp(app);
+            BorderStyle = LineStyle.None;
+            Title = "PROSniffer";
+            Height = Dim.Fill();
+            Width = Dim.Fill();
+
+            _packetLogView = new TextView
+            {
+                X = Pos.X(this),
+                Y = Pos.Top(this),
+                Width = Dim.Fill(),
+                Height = Dim.Fill(12),
+                BorderStyle = LineStyle.Double,
+                ReadOnly = true,
+            };
+
+            _logView = new TextView
+            {
+                X = Pos.X(this),
+                Y = Pos.Percent(60),
+                Width = Dim.Fill(),
+                Height = Dim.Fill(4),
+                BorderStyle = LineStyle.Single,
+                ReadOnly = true,
+                WordWrap = true,
+            };
+
+            _commandInputView = new TextField
+            {
+                X = Pos.X(this),
+                Y = Pos.AnchorEnd(4),
+                Width = Dim.Fill(),
+                BorderStyle = LineStyle.Single,
+                Data = false,
+                Autocomplete = new CommandTextFieldAutocomplete(),
+            };
+            _commandInputView.TextChanged += (_, _) => ShowCommandSuggestions();
+            _commandInputView.KeyDownNotHandled += CommandInputView_KeyDownNotHandled;
+            _commandInputView.KeyDown += CommandInputView_KeyDown;
+            if (_commandInputView.Autocomplete.SuggestionGenerator is ArgumentSuggestionGenerator generator)
+            {
+                generator.SelectedSuggestionChanged += (_) => ShowCommandSuggestions();
+                generator.ViewingSuggestionChanged += CommandInputView_ViewingSuggestionChanged;
+            }
+
+            _lastStatus = new(Key.Empty, "Waiting or a command...", null);
+
+            StatusBar statusBar = new([_lastStatus]);
+
+            // TODO: The order matters, maybe Terminal.Gui bug.. It's annoying, maybe it doesn't let you focus a view on constructor I guess or definitely a bug...
+            Add(_commandInputView, _packetLogView, _logView, statusBar);
+
+            _mainWorker = new MainWorker();
+            _mainWorker.PacketLogged += (log) =>
+            {
+                App?.Invoke(() =>
+                {
+                    AddTextViewLine(_packetLogView, log);
+                });
+            };
+            _mainWorker.Logged += (log) =>
+            {
+                App?.Invoke(() =>
+                {
+                    AddTextViewLine(_logView, log);
+                });
+            };
+            _mainWorker.ClearLogRequested += () =>
+            {
+                App?.Invoke(() =>
+                {
+                    _packetLogView.Text = "";
+                    _packetLogView.MoveHome();
+
+                    _logView.Text = "";
+                    _logView.MoveHome();
+                });
+            };
+            _mainWorker.StatusUpdate += (status) =>
+            {
+                App?.Invoke(() =>
+                {
+                    _lastStatus.Title = status;
+                });
+            };
+
+            _logView.Text = "Available commands(try <command> help to know more about it):" + Environment.NewLine + string.Join(Environment.NewLine, MainWorker.Commands.Select(c => c.Name));
+            _logView.MoveHome();
+        }
+
+        public void OnQuite()
+        {
+            _mainWorker.Quit();
+        }
+
+        private static void AddTextViewLine(TextView textView, string line)
+        {
+            textView.Text += line + Environment.NewLine;
+            ScrollToEnd(textView);
+            StripTextView(textView);
+        }
+
+        private static void StripTextView(TextView textView)
+        {
+            var lines = textView.GetAllLines();
+            if (lines.Count > 10000)
+            {
+                lines.RemoveRange(0, 8000);
+                textView.SetNeedsDraw();
+            }
+        }
+
+        private static void ScrollToEnd(TextView textView)
+        {
+            if (textView.CurrentRow > 0 && textView.CurrentRow < textView.Lines - 1)
+            {
+                return;
+            }
+            textView.MoveEnd();
+        }
+
+        private void CommandInputView_KeyDown(object? sender, Key e)
+        {
+            if (e == Key.Backspace)
+            {
+                _beforeCursorPos = _commandInputView.CursorPosition;
+            }
+        }
+
+        private void CommandInputView_KeyDownNotHandled(object? sender, Key e)
+        {
+            if (e == Key.Enter && _currentCommand != null)
+            {
+                var fullCommand = _commandInputView.Text.Trim();
+                var parseResult = _currentCommand.Parse(fullCommand);
+                if (parseResult.Errors.Count == 0)
+                {
+                    if (parseResult.Action is HelpAction action)
+                    {
+                        var helpOutput = new StringBuilderTextWriter();
+                        parseResult.InvocationConfiguration.Output = helpOutput;
+                        action.Invoke(parseResult);
+
+                        _logView.Text = helpOutput.GetContent() + Environment.NewLine;
+                        _logView.MoveHome();
+                    }
+                    else
+                    {
+                        if (_nextCommands.TryPeek(out var command) && command == fullCommand)
+                        {
+                            _nextCommands.Pop();
+                        }
+                        _prevCommands.Push(fullCommand);
+                        _lastStatus.Title = "Executing: " + fullCommand;
+                        _mainWorker.ProcessCommand(parseResult);
+                    }
+                }
+                else
+                {
+                    _lastStatus.Title = "Multiple errors occurred, please refer to README.md";
+                    _mainWorker.Logged?.Invoke(string.Join(Environment.NewLine, parseResult.Errors.Select(e => e.Message)));
+                }
+
+                _commandInputView.Text = "";
+            }
+            else if (e == Key.CursorUp && _prevCommands.Count > 0)
+            {
+                string lastCmd = _prevCommands.Pop();
+                _nextCommands.Push(_commandInputView.Text);
+                _commandInputView.Text = lastCmd;
+                e.Handled = true;
+                _commandInputView.MoveEnd();
+            }
+            else if (e == Key.CursorDown && _nextCommands.Count > 0)
+            {
+                string nextCmd = _nextCommands.Pop();
+                _prevCommands.Push(_commandInputView.Text);
+                _commandInputView.Text = nextCmd;
+                e.Handled = true;
+                _commandInputView.MoveEnd();
+            }
+        }
+
+        private void CommandInputView_ViewingSuggestionChanged(CompletionItem suggesion)
+        {
+            _lastStatus.Title = "Selected: " + suggesion.Label + (string.IsNullOrEmpty(suggesion.Detail) ? "" : " - " + suggesion.Detail);
+        }
+
+        private void ShowCommandSuggestions()
+        {
+            if (!string.IsNullOrEmpty(_commandInputView.Text) && _commandInputView.Autocomplete.SuggestionGenerator is ArgumentSuggestionGenerator generator)
+            {
+                if (_commandInputView.Autocomplete is CommandTextFieldAutocomplete cmdAutocomplete && cmdAutocomplete.IsSuggestionSelecting)
+                {
+                    if (_currentCommand != null)
+                    {
+                        generator.AllSuggestions = [];
+                    }
+                    return;
+                }
+                var args = _commandInputView.Text.SplitArgs(false, true);
+                if (_beforeCursorPos != -1 && _beforeCursorPos > _commandInputView.CursorPosition && args.Length == 1)
+                {
+                    _currentCommand = null;
+                }
+                if (_currentCommand == null && MainWorker.Commands.Find(c => c.Name.Equals(args[0], StringComparison.InvariantCultureIgnoreCase)) is PROSnifferCommand selectedCommand)
+                {
+                    _currentCommand = selectedCommand;
+                }
+                if (_currentCommand != null)
+                {
+                    try
+                    {
+                        generator.AllSuggestions = [.. _currentCommand.Parse(_commandInputView.Text)
+                                                                      .GetCompletions(_commandInputView.CursorPosition)];
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        generator.AllSuggestions = [];
+                    }
+                    return;
+                }
+
+                if (_currentCommand == null)
+                {
+                    generator.AllSuggestions = [.. MainWorker.Commands
+                                                        .FindAll(c => c.Name.StartsWith(_commandInputView.Text, StringComparison.OrdinalIgnoreCase))
+                                                        .Select(c => new CompletionItem(c.Name, insertText: c.Name, detail: c.Description ?? ""))
+                                                        .Distinct()];
+                    return;
+                }
+                generator.AllSuggestions = [];
+            }
+            else
+            {
+                _currentCommand = null;
+            }
+        }
+    }
+
+    public class MainWorker
+    {
+        public const string HELP_MSG = $"""
          PROSniffer
 
          Important note: Make sure you start to sniff the packets before logging in, otherwise won't be able to retain the proper RC4 state.
@@ -98,16 +358,97 @@ namespace PROSniffer
             Desc: Prints out this message.
          """;
 
-        private readonly List<string> _packetLogs = new();
+        static IEnumerable<CompletionItem> GetInterfaceCompletions(CompletionContext context)
+        {
+            if (!string.IsNullOrEmpty(context.WordToComplete) && !int.TryParse(context.WordToComplete, out int _))
+            {
+                yield break;
+            }
+            var idx = 0;
+            foreach (var name in PortSniffer.GetInterfaces())
+            {
+                yield return new CompletionItem(idx.ToString() + " (" + name + ")", insertText: idx.ToString());
+                idx++;
+            }
+        }
+
+        static IEnumerable<CompletionItem> GetPortCompletions(CompletionContext context)
+        {
+            if (!string.IsNullOrEmpty(context.WordToComplete) && !int.TryParse(context.WordToComplete, out int _))
+            {
+                yield break;
+            }
+            yield return new CompletionItem("800 (Silver)", insertText: "800");
+            yield return new CompletionItem("801 (Gold)", insertText: "801");
+        }
+
+        public static readonly List<PROSnifferCommand> Commands = [
+            new CommandBuilder("interfaces")
+                .Add(new HelpOption("help"))
+                .Description("Shows all the eathernet/wireless interfaces on your machine.")
+                .Build(),
+            new CommandBuilder("sniff")
+                .Add(new HelpOption("help"))
+                .Add(new OptionBuilder<int>("interface", "i")
+                    .Description("The interface index to use for sniffing.")
+                    .Required(true)
+                    .CompletionSource(GetInterfaceCompletions)
+                    .Build())
+                .Add(new OptionBuilder<ushort>("port", "p")
+                    .Description("The remote port to sniff, default is 800(Silver Server), provide 801 for Gold Server.")
+                    .Required(true)
+                    .CompletionSource(GetPortCompletions)
+                    .DefaultValueFactory(_ => Default.GAME_PORT)
+                    .Build())
+                .Add(new Option<string>("custom-filter", "cf") {
+                    Description = "A custom filter to apply on the sniffing device, like wireshark advanced filters. eg. `cf <str>`",
+                    Required = false,
+                })
+                .Description("Starts sniffing, if no argument is provided uses last provided arguments.")
+                .Build(),
+            new CommandBuilder("filter")
+                .Add(new HelpOption("help"))
+                .Add(new Argument<string[]>("pattern") { Description = "Custom Regex patterns to filter out received packets." })
+                .Description("You can provide custom Regex pattern to filter out received packets. No <pattern> means clear previous patterns.")
+                .Build(),
+            new CommandBuilder("pause")
+                 .Add(new HelpOption("help"))
+                .Description("Pauses from printing/logging packets.")
+                .Build(),
+            new CommandBuilder("resume")
+                .Add(new HelpOption("help"))
+                .Description("Resumes from printing/logging packets.")
+                .Build(),
+            new CommandBuilder("clear")
+                .Add(new HelpOption("help"))
+                .Description("Clears the console screen, doesn't clear the internal packet log(which is used if you want to dump packets when quiting normally).")
+                .Build(),
+            new CommandBuilder("dump")
+                .Add(new HelpOption("help"))
+                .Add(new Argument<string>("file-name") { Description = "The file name to dump the packets to.", DefaultValueFactory = (_) => "" })
+                .Description($"Dumps all the packets inside the {Default.DUMP_DIRECTORY} folder.")
+                .Build(),
+            new CommandBuilder("exit")
+                .Add(new HelpOption("help"))
+                .Description("Exits the program while dumping the current packet logs if enabled.")
+                .Build(),
+        ];
+
+        private readonly List<string> _packetLogs = [];
+
+        public Action<string>? PacketLogged;
+        public Action? ClearLogRequested;
+        public Action<string>? Logged;
+        public Action<string>? StatusUpdate;
 
         private readonly ConcurrentQueue<string> _recvPacketsQueue = new();
         private readonly ConcurrentQueue<string> _sentPacketsQueue = new();
 
-        private readonly List<string> _filterRegexes = new()
-        {
+        private readonly List<string> _filterRegexes =
+        [
             // Ignores all the chat and other player update packets...
             @"^(?!w\|\.).*$", @"^(?!=\|\.).*$"
-        };
+        ];
 
         private RC4Sniffer? _sniffer = null;
         private bool _isRunning = true;
@@ -117,98 +458,104 @@ namespace PROSniffer
         private bool _dumpPackets = false;
         private string _dumpFilename = "";
 
-        private bool _firstSentPacket = false;
+        private bool _seenLoginPacket = false;
 
-        public Main()
+        public MainWorker()
         {
-            Task.Run(UpdateSniffer);
             Task.Run(Update);
         }
 
-        private void UpdateSniffer()
+        private void Update()
         {
+            if (!_isRunning) return;
             if (_sniffer != null)
             {
                 lock (_sniffer)
                 {
                     _sniffer?.Update();
                 }
+                UpdatePackets();
             }
-            Task.Delay(1).ContinueWith((previous) => UpdateSniffer());
+            Task.Delay(1).ContinueWith((previous) => Update());
         }
 
-        private void Update()
+        private void UpdatePackets()
         {
-            if (_sniffer != null && !_pausedSniffing)
+            if (_pausedSniffing)
             {
-                lock (_packetLogs)
+                return;
+            }
+            Debug.Assert(_sniffer != null);
+            lock (_packetLogs)
+            {
+                while (_sentPacketsQueue.TryDequeue(out var packet))
                 {
-                    while (_sentPacketsQueue.TryDequeue(out var packet))
+                    string timeStr = "";
+
+                    if (packet.StartsWith("+|.|") && !_seenLoginPacket)
                     {
-                        string timeStr = "";
+                        _seenLoginPacket = true;
+                    }
+                    else
+                    {
+                        var textEncoding = _sniffer.GetTextEncoding();
+                        var bytes = textEncoding.GetBytes(packet);
 
-                        if (!_firstSentPacket)
+                        ReadOnlySpan<byte> first4Bytes = new(bytes, 0, sizeof(float));
+
+                        try
                         {
-                            var textEncoding = _sniffer.GetTextEncoding();
-                            var bytes = textEncoding.GetBytes(packet);
-
-                            ReadOnlySpan<byte> first4Bytes = new(bytes, 0, sizeof(float));
-
-                            try
+                            var foundTime = BitConverter.ToSingle(first4Bytes);
+                            if (float.IsNormal(foundTime))
                             {
-                                var foundTime = BitConverter.ToSingle(first4Bytes);
-                                if (float.IsNormal(foundTime))
-                                {
-                                    timeStr = $"[{foundTime}] ";
-                                    packet = textEncoding.GetString(bytes.Skip(4).ToArray());
-                                }
-                            }
-                            catch (Exception)
-                            {
+                                timeStr = $"[{foundTime}] ";
+                                packet = textEncoding.GetString([.. bytes.Skip(4)]);
                             }
                         }
-                        else
+                        catch (Exception)
                         {
-                            _firstSentPacket = false;
-                        }
-
-                        var packetLog = $"[>] {timeStr}" + packet;
-                        AddLog(packetLog);
-                        _packetLogs.Add(packetLog);
-
-                        if (packet == "quit")
-                        {
-                            StartNewSniffer(_sniffer.DeviceIndex, _sniffer.RemotePort, _sniffer.CustomFilter);
                         }
                     }
-                    while (_recvPacketsQueue.TryDequeue(out var packet))
-                    {
-                        foreach (var filter in _filterRegexes)
-                        {
-                            if (!Regex.IsMatch(packet, filter))
-                            {
-                                goto Continue;
-                            }
-                        }
-                        AddLog(packet);
-                        _packetLogs.Add(packet);
 
-                        if (packet == "quit")
+                    var packetLog = $"[>] {timeStr}" + packet;
+                    PacketLogged?.Invoke(packetLog);
+                    _packetLogs.Add(packetLog);
+
+                    if (packet.StartsWith("quit"))
+                    {
+                        TryDumpPackets();
+                        StartNewSniffer(_sniffer.DeviceIndex, _sniffer.RemotePort, _sniffer.CustomFilter);
+                    }
+                }
+                while (_recvPacketsQueue.TryDequeue(out var packet))
+                {
+                    foreach (var filter in _filterRegexes)
+                    {
+                        if (!Regex.IsMatch(packet, filter))
                         {
-                            StartNewSniffer(_sniffer.DeviceIndex, _sniffer.RemotePort, _sniffer.CustomFilter);
+                            return;
                         }
+                    }
+                    PacketLogged?.Invoke(packet);
+                    _packetLogs.Add(packet);
+
+                    if (packet.StartsWith("quit"))
+                    {
+                        TryDumpPackets();
+                        StartNewSniffer(_sniffer.DeviceIndex, _sniffer.RemotePort, _sniffer.CustomFilter);
                     }
                 }
             }
-            Continue:
-            Task.Delay(1).ContinueWith((previous) => Update());
         }
 
         private void StartNewSniffer(int interfaceIdx, ushort port, string? customFilter)
         {
             lock (_packetLogs)
             {
-                _firstSentPacket = true;
+                _packetLogs.Clear();
+                _seenLoginPacket = false;
+                _sentPacketsQueue.Clear();
+                _recvPacketsQueue.Clear();
                 _sniffer?.StopSniffing();
 
                 _sniffer = new RC4Sniffer(interfaceIdx, port, customFilter);
@@ -216,7 +563,7 @@ namespace PROSniffer
                 _sniffer.SentPacket += Sniffer_SentPacket;
                 _sniffer.StartSniffing();
 
-                _packetLogs.Clear();
+                StatusUpdate?.Invoke($"Sniffing on interface index: {interfaceIdx}, port: {port}, custom filter: {customFilter ?? "none"}");
             }
         }
 
@@ -230,192 +577,105 @@ namespace PROSniffer
             _recvPacketsQueue.Enqueue(packet);
         }
 
-        public void ReadInput()
+        public void ProcessCommand(ParseResult parseResult)
         {
-            while (_isRunning)
+            switch (parseResult.RootCommandResult.Command.Name)
             {
-                var cmd = Console.ReadLine();
-                if (!string.IsNullOrEmpty(cmd))
-                {
-                    ProcessCommand(cmd);
-                }
-            }
-        }
-
-        public void ProcessCommand(string command)
-        {
-            var cmdArgs = command.SplitArgs(true);
-            switch (cmdArgs[0].ToLowerInvariant())
-            {
-                case "exit":
-                case "quit":
-                case "q":
-                    Quit();
-                    break;
-                case "help":
-                case "h":
-                    AddLog("");
-                    AddLog("");
-                    PrintHelp();
-                    break;
-                case "dump":
-                    _dumpPackets = !_dumpPackets;
-                    if (!_dumpPackets)
-                    {
-                        _dumpFilename = "";
-                        break; // Yeah just wanted to check out this *early* switch case break lol...
-                    }
-                    if (cmdArgs.Length > 1)
-                    {
-                        _dumpFilename = cmdArgs[1];
-                    }
-                    else
-                    {
-                        _dumpFilename = DateTime.Now.ToString("yyyy-MM-dd") + ".txt";
-                    }
-                    break;
                 case "sniff":
-#if !GOLDTEST
-                    var port = Default.GAME_PORT;
-                    int interfaceIdx = -1;
-                    string? customFilter = null;
-
-                    if (cmdArgs.Length > 1)
                     {
-                        foreach (var rawArg in cmdArgs.Skip(1))
-                        {
-                            var arg = rawArg.Replace("\"", "").Replace("'", "");
-                            if (arg.Contains('='))
-                            {
-                                var argParams = arg.Split('=');
-                                if (argParams.Length != 2)
-                                {
-                                    continue;
-                                }
-                                switch (argParams[0].ToLowerInvariant())
-                                {
-                                    case "p":
-                                    case "port":
-                                        if (ushort.TryParse(argParams[1], out var newPort))
-                                        {
-                                            port = newPort;
-                                        }
-                                        break;
-                                    case "i":
-                                    case "interface":
-                                        if (!int.TryParse(argParams[1], out interfaceIdx))
-                                        {
-                                            AddLog("Unexpected interface index provided!");
-                                        }
-                                        break;
-                                    case "cf":
-                                    case "custom-filter":
-                                        customFilter = argParams[1];
-                                        break;
-                                }
-                            }
-                            else if (!int.TryParse(arg, out interfaceIdx))
-                            {
-                                AddLog("Unexpected interface index provided!");
-                            }
-                        }
-                    }
-                    else if (_sniffer != null)
-                    {
-                        interfaceIdx = _sniffer.DeviceIndex;
-                        port = _sniffer.RemotePort;
-                    }
-#else
-                    ushort port = 801;
-                    int interfaceIdx = 5;
-                    string? customFilter = null;
-#endif
-                    if (interfaceIdx != -1)
-                    {
-                        ClearLog();
-                        AddLog($"Starting sniffing port: {port}, interface idx: {interfaceIdx}...");
+                        var interfaceIdx = parseResult.GetRequiredValue<int>("interface");
+                        var port = parseResult.GetRequiredValue<ushort>("port");
+                        var customFilter = parseResult.GetValue<string>("custom-filter");
+                        ClearLogRequested?.Invoke();
                         StartNewSniffer(interfaceIdx, port, customFilter);
                     }
                     break;
                 case "interfaces":
-                case "i":
-                    AddLog("");
-                    AddLog("Interfaces:");
-                    int idx = 0;
-                    foreach (var inter in PortSniffer.GetInterfaces())
                     {
-                        AddLog($"[{idx++}]: {inter}");
-                    };
+                        Logged?.Invoke("");
+                        Logged?.Invoke("Interfaces:");
+                        int idx = 0;
+                        foreach (var inter in PortSniffer.GetInterfaces())
+                        {
+                            Logged?.Invoke($"[{idx++}]: {inter}");
+                        }
+                    }
                     break;
                 case "pause":
-                case "p":
-                    if (_sniffer != null)
-                    {
-                        _pausedSniffing = true;
-                    }
+                    if (_sniffer is null || !_sniffer.HasStarted) return;
+                    _pausedSniffing = true;
+                    StatusUpdate?.Invoke($"Sniffing (Paused) on interface index: {_sniffer.DeviceIndex}, port: {_sniffer.RemotePort}, custom filter: {_sniffer.CustomFilter ?? "none"}");
                     break;
                 case "resume":
-                case "r":
+                    if (_sniffer is null || !_sniffer.HasStarted) return;
                     _pausedSniffing = false;
+                    StatusUpdate?.Invoke($"Sniffing on interface index: {_sniffer.DeviceIndex}, port: {_sniffer.RemotePort}, custom filter: {_sniffer.CustomFilter ?? "none"}");
                     break;
                 case "clear":
-                case "cls":
-                    ClearLog();
+                    ClearLogRequested?.Invoke();
                     break;
                 case "filter":
-                case "f":
-                    lock (_packetLogs)
                     {
-                        if (cmdArgs.Length <= 1)
+                        lock (_packetLogs)
                         {
-                            _filterRegexes.Clear();
-                            break;
+                            var patterns = parseResult.GetValue<string[]>("pattern");
+                            if (patterns == null || patterns.Length == 0)
+                            {
+                                _filterRegexes.Clear();
+                                break;
+                            }
+                            foreach (var pattern in patterns)
+                            {
+                                _filterRegexes.Add(pattern);
+                            }
                         }
-                        foreach (var rawArg in cmdArgs)
+                    }
+                    break;
+                case "dump":
+                    {
+                        _dumpPackets = true;
+                        var fileName = parseResult.GetValue<string>("file-name");
+                        if (!string.IsNullOrEmpty(fileName))
                         {
-                            var arg = rawArg.Replace("\"", "").Replace("'", "");
-                            _filterRegexes.Add(arg);
+                            _dumpFilename = fileName;
+                        }
+                        else
+                        {
+                            _dumpFilename = DateTime.Now.ToString("yyyy-MM-dd") + ".txt";
                         }
                     }
                     break;
             }
-        }
-
-        public void AddLog(string log)
-        {
-            lock (_packetLogs)
-            {
-                Console.WriteLine(log);
-            }
-        }
-
-        public void ClearLog()
-        {
-            lock (_packetLogs)
-            {
-                Console.Clear();
-            }
-        }
-
-        public void PrintHelp()
-        {
-            AddLog(HELP_MSG);
         }
 
         public void Quit()
         {
+            TryDumpPackets();
             lock (_packetLogs)
             {
-                if (_dumpPackets && _packetLogs.Count > 0)
-                {
-                    if (!Directory.Exists(Default.DUMP_DIRECTORY))
-                    {
-                        Directory.CreateDirectory(Default.DUMP_DIRECTORY);
-                    }
-                    string file = Path.Combine(Default.DUMP_DIRECTORY, _dumpFilename);
-                    File.WriteAllText(file, string.Join(Environment.NewLine, _packetLogs));
-                }
                 _isRunning = false;
+            }
+            if (_sniffer == null) return;
+            lock (_sniffer)
+            {
+                _sniffer.StopSniffing();
+            }
+        }
+
+        public void TryDumpPackets()
+        {
+            lock (_packetLogs)
+            {
+                if (!(_dumpPackets && _packetLogs.Count > 0))
+                {
+                    return;
+                }
+                if (!Directory.Exists(Default.DUMP_DIRECTORY))
+                {
+                    Directory.CreateDirectory(Default.DUMP_DIRECTORY);
+                }
+                string file = Path.Combine(Default.DUMP_DIRECTORY, _dumpFilename);
+                File.WriteAllText(file, string.Join(Environment.NewLine, _packetLogs));
             }
         }
     }

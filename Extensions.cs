@@ -9,10 +9,10 @@ namespace PROSniffer
 {
     public static class Extensions
     {
-        public static string[] SplitArgs(this string command, bool keepQuote = false)
+        public static string[] SplitArgs(this string command, bool keepQuote = false, bool keepEmpty = false)
         {
             if (string.IsNullOrEmpty(command))
-                return Array.Empty<string>();
+                return [];
 
             var inQuote = false;
             var chars = command.ToCharArray().Select(v =>
@@ -22,10 +22,17 @@ namespace PROSniffer
                 return !inQuote && v == ' ' ? '\n' : v;
             }).ToArray();
 
-            return new string(chars).Split('\n')
-                .Select(x => keepQuote ? x : x.Trim('"'))
-                .Where(x => !string.IsNullOrWhiteSpace(x))
-                .ToArray();
+            if (!keepEmpty)
+            {
+                return [.. new string(chars).Split('\n')
+                    .Select(x => keepQuote ? x : x.Trim('"'))
+                    .Where(x => !string.IsNullOrWhiteSpace(x))];
+            }
+            else
+            {
+                return [.. new string(chars).Split('\n')
+                    .Select(x => keepQuote ? x : x.Trim('"'))];
+            }
         }
 
         public static IEnumerable<string> SplitIntoChunks(this string input, int chunkSize)

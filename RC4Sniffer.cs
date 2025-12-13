@@ -1,7 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
+﻿using System.Text;
 
 namespace PROSniffer
 {
@@ -85,7 +82,7 @@ namespace PROSniffer
                 throw new ArgumentException("The provided byte array must be 32 in length.");
             }
             Decrypt(initBytes, 16);
-            Encrypt(initBytes.Skip(16).ToArray(), 16);
+            Encrypt(initBytes[16..]);
             StateReady = true;
         }
 
@@ -96,7 +93,7 @@ namespace PROSniffer
             if (!StateReady)
             {
                 Initialize(data);
-                return Array.Empty<byte>();
+                return [];
             }
             return Decrypt(data);
         }

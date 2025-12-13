@@ -17,7 +17,7 @@ You can continue writing on the standard input(console) while packets are being 
 
 Commands:
 ```
-interfaces|i
+interfaces
    Desc: Shows all the eathernet/wireless interfaces on your machine.
 sniff i=[interface index] <p|port=[ushort]; default is 800(Silver Server), provide 801 for Gold Server> <custom filter>
    Desc: Starts sniffing, if no argument is provided uses last provided arguments. 
@@ -50,16 +50,16 @@ Interfaces:
 [6]: Adapter for loopback traffic capture
 ```
 
-A list like above should be printed, if it doesn't just put `i` and enter.<br>
+A list like above should be printed, if it doesn't just put `interfaces` and enter.<br>
 As you can see for the above case it's obvious that index no 5 is the proper interface to care about.<br>
 So for this specific case the user should put the follwing command if the user is going to login in to the `Gold` server.
 
 ```
-sniff i=5 port=801
+sniff i 5 port 801
 ```
 
 If the user is going to log in to the `Silver` server the command should be like this.
 
 ```
-sniff i=5 port=800
+sniff i 5 port 800
 ```
