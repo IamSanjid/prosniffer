@@ -7,7 +7,12 @@ namespace PROSniffer
     {
         public static IEnumerable<string> GetInterfaces()
         {
-            return CaptureDeviceList.Instance.Select(x => x.Description);
+            return CaptureDeviceList.Instance.Select(x =>
+            {
+                var name = string.IsNullOrWhiteSpace(x.Name) ? "<unknown>" : x.Name;
+                var description = string.IsNullOrWhiteSpace(x.Description) ? null : x.Description;
+                return description == null ? name : $"{name} ({description})";
+            });
         }
 
         public ushort RemotePort { get; }
